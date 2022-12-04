@@ -53,8 +53,8 @@ class Upsample(nn.Module):
                                         padding=1)
 
     def forward(self, x):
-        x = torch.nn.functional.interpolate(
-            x, scale_factor=2.0, mode="nearest")
+        x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
+
         if self.with_conv:
             x = self.conv(x)
         return x
@@ -237,6 +237,7 @@ class Model_Scale(nn.Module):
         latent_in = self.mlp_latin(latin).mean(0).unsqueeze(0)
         scale = self.mlp_scale(torch.cat((latent,latent_in),1))
         return scale
+
     def load_my_state_dict(self, state_dict):
         own_state = self.state_dict()
         for name, param in state_dict.items():
@@ -269,7 +270,7 @@ class Model(nn.Module):
         resamp_with_conv = True
         num_timesteps = 1000
         self.config = config
-        if 'nerf' not in self.config.model.name:
+        if 'nerf' not in self.config.model.name and 'densenet' not in self.config.model.name:
             self.mlp = nn.Sequential(nn.Linear(dim_in,4*ch),nn.SiLU())
             self.mlp_out = nn.Sequential(nn.Linear(dim_output,4*ch),nn.SiLU())
             self.mlp_latin = nn.Sequential(nn.Linear(dim_lat_out,4*ch),nn.SiLU())
@@ -408,8 +409,7 @@ class Model(nn.Module):
             for i_block in range(self.num_res_blocks+1):
                 if (len(hs[-1].shape) == 3 ):
                     hs[-1] = hs[-1].unsqueeze(0)
-                h = self.up[i_level].block[i_block](
-                    torch.cat([h, hs.pop()], dim=1), temb)
+                h = self.up[i_level].block[i_block](torch.cat([h, hs.pop()], dim=1), temb)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
             if i_level != 0:

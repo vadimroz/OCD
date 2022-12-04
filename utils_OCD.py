@@ -117,9 +117,7 @@ def overfitting_batch(bmodel=None,weight_name='',bias_name='',
 batch=None, loss_fn=None,n_iteration=10,lr=0.5e-4,verbose=False):
     base_model = copy.deepcopy(bmodel)
     param_weight = base_model.get_parameter(weight_name+'.weight')
-    opt = torch.optim.Adam([
-                {'params': param_weight},
-            ], lr=lr)
+    opt = torch.optim.Adam([{'params': param_weight},], lr=lr)
     
     for epoch in range(n_iteration):
         opt.zero_grad()
@@ -191,8 +189,7 @@ batch=None, loss_fn=None,std=0,dopt=0):
     del model
     return ldiffusion,loptimal,lbase
 
-def check_ps(named_parameter='',bmodel=None,w=0,
-batch=None, loss_fn=None,std=0,dopt=0):
+def check_ps(named_parameter='',bmodel=None,w=0, batch=None, loss_fn=None,std=0,dopt=0):
     model = copy.deepcopy(bmodel)
     r = copy.deepcopy( model.get_parameter(named_parameter+'.weight').data)
     predicted_labels,h = model(batch['input'])
@@ -207,23 +204,17 @@ batch=None, loss_fn=None,std=0,dopt=0):
     loss = loss_fn(predicted_labels, batch['output'].long())
     ldiffusion = loss.item()
     del model
-    return ldiffusion,loptimal,lbase
+    return ldiffusion,loptimal,lbase, predicted_labels
 
-def check_ps_wrapper(isnerf=0,named_parameter='',bmodel=None,w=0,
-batch=None, loss_fn=None,std=0,dopt=0):
-    if isnerf:
-        return check_ps_nerf(named_parameter=named_parameter,bmodel=bmodel,w=w,
-batch=batch, loss_fn=loss_fn,std=std,dopt=dopt)
-    else:
-        return check_ps(named_parameter=named_parameter,bmodel=bmodel,w=w,
-batch=batch, loss_fn=loss_fn,std=std,dopt=dopt)
+def check_ps_wrapper(isnerf=0,named_parameter='',bmodel=None,w=0, batch=None, loss_fn=None,std=0,dopt=0):
+    return check_ps(named_parameter=named_parameter,bmodel=bmodel,w=w, batch=batch, loss_fn=loss_fn,std=std,dopt=dopt)
 
 def noising(x,t,padding=None):
     batch = t.shape[0]
     normalize = x.view(batch,-1).std(-1).unsqueeze(1).unsqueeze(1)
     x = x / normalize
     a,b = x.shape[1],x.shape[2]
-    error = torch.randn((batch,a,b)).to(x.device)
+    error = torch.randn((batch,a, b)).to(x.device)
     sigma = (1-betas).cumprod(dim=0).index_select(0, t)
     xnoisy = x*((sigma).sqrt().unsqueeze(1).unsqueeze(2)) + error*((1.0-sigma).sqrt().unsqueeze(1).unsqueeze(2))
     if len(xnoisy.shape) == 2:
@@ -270,9 +261,29 @@ def generalized_steps(named_parameter, numstep, x, model, bmodel, batch, loss_fn
             xt_next = at_next.sqrt() * x0_t + c1 * torch.randn_like(x) + c2 * et
             xs.append(xt_next.to('cpu'))
         wdiff = xs[-1]
-        ldiffusion,loptimal,lbase = check_ps_wrapper(isnerf=isnerf,named_parameter=named_parameter,
+        ldiffusion,loptimal,lbase, predicted_labels = check_ps_wrapper(isnerf=isnerf,named_parameter=named_parameter,
             bmodel=bmodel, w=wdiff.squeeze(), batch=batch,
             loss_fn=loss_fn,std=std,dopt=dopt
             )
-    return ldiffusion,loptimal,lbase,wdiff
+    return ldiffusion,loptimal,lbase,wdiff, predicted_labels
+
+def nextpower(num, base):
+  i = 1
+  while i < num: i *= base
+  return i
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].contiguous().view(-1).float().sum(0)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
 

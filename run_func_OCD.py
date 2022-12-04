@@ -1,14 +1,16 @@
 from pickle import FALSE
 import torch
+import torch.nn as nn
 import torch.functional as F
 from math import floor as floor
 from torch.utils.data import DataLoader
+from torchvision import models
 from torchvision.transforms import ToTensor
 from copy import deepcopy
 import os
 import numpy as np
 from diffusion_ocd import Model,Model_Scale
-from utils_OCD import overfitting_batch_wrapper,noising,generalized_steps,ConfigWrapper
+from utils_OCD import overfitting_batch_wrapper,noising,generalized_steps,ConfigWrapper, nextpower, accuracy
 import torch.utils.tensorboard as tb
 from train import train,vgg_encode
 from ema import EMAHelper
@@ -16,7 +18,6 @@ import os
 import argparse
 import json
 from data_loader import wrapper_dataset
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -86,15 +87,14 @@ if args.resume_training:
     diffusion_model.load_state_dict(torch.load(args.diffusion_model_path))
     scale_model.load_state_dict(torch.load(args.scale_model_path))
 train_loader, test_loader, model = wrapper_dataset(config, args, device)
-model.load_state_dict(torch.load(module_path))
+model.load_state_dict(torch.load(config.model.pretrained))
+
 model = model.to(device)
 if config.training.loss == 'mse':
     opt_error_loss = torch.nn.MSELoss()
 elif config.training.loss == 'ce':
     opt_error_loss = torch.nn.CrossEntropyLoss()
-elif config.training.loss == 'own':
-    # Change according to desired objective
-    pass
+
 optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=lr)
 optimizer_scale= torch.optim.Adam(scale_model.parameters(), lr=5*lr)
 ema_helper = EMAHelper(mu=0.9999)
@@ -105,12 +105,14 @@ weight_name = config.model.weight_name
 dmodel_original_weight = deepcopy(model.get_parameter(weight_name+'.weight'))
 mat_shape = dmodel_original_weight.shape
 assert len(mat_shape) == 2, "Weight to overfit should be a matrix !"
+mat_shape = dmodel_original_weight.shape
 padding = []
+max_dim = nextpower(max(mat_shape), 2)
 for s in mat_shape:
-    if s == 128:
+    if s == max_dim:
         padding.append([0,0])
-    elif s<128:
-        rem = 128-s
+    elif s<max_dim:
+        rem = max_dim-s
         if (rem % 2) == 0:
             padding.append([rem//2,rem//2])
         else:
@@ -137,12 +139,14 @@ else:
 #################################################################################################
 ########################################### Test Phase ##########################################
 #################################################################################################
-
+model.eval()
 print('*'*100)
-ldiff,lopt,lbaseline = 0,0,0
+OCD = 0
+ldiff, lopt, lbaseline, OCD_prec1_tot, OCD_prec5_tot = 0, 0, 0, 0, 0
 for idx, batch in enumerate(test_loader):
     batch['input'] = batch['input'].to(device)
     batch['output'] = batch['output'].to(device)
+
     # Overfitting encapsulation #
     weight,hfirst,outin= overfitting_batch_wrapper(
         datatype=args.datatype,
@@ -154,13 +158,10 @@ for idx, batch in enumerate(test_loader):
         verbose=False
         )
     diff_weight = weight - dmodel_original_weight
-    if args.datatype == 'tinynerf':
-            encoding_out = vgg_encode(outin)
-    else:
-        encoding_out = outin
+    encoding_out = outin
     with torch.no_grad():
         std = scale_model(hfirst,encoding_out)
-    ldiffusion, loptimal, lbase, wdiff = generalized_steps(
+    ldiffusion, loptimal, lbase, wdiff, predicted_labels = generalized_steps(
         named_parameter=weight_name, numstep=config.diffusion.diffusion_num_steps_eval,
         x=(diff_weight.unsqueeze(0),hfirst,encoding_out), model=diffusion_model,
         bmodel=model, batch=batch, loss_fn=opt_error_loss,
@@ -170,4 +171,10 @@ for idx, batch in enumerate(test_loader):
     ldiff += ldiffusion
     lopt += loptimal
     lbaseline += lbase
-    print(f"\rBaseline loss {lbaseline/(idx+1)}, Overfitted loss {lopt/(idx+1)}, Diffusion loss {ldiff/(idx+1)}",end='')
+    ocd_prec1, ocd_prec5 = accuracy(predicted_labels, batch['output'], topk=(1, 5))
+    OCD_prec1_tot += ocd_prec1
+    OCD_prec5_tot += ocd_prec5
+    print(f"\rBaseline loss {lbaseline / (idx + 1)}, Overfitted loss {lopt / (idx + 1)}, Diffusion loss {ldiff / (idx + 1)}")
+    print(f'Prec1: {ocd_prec1}, Prec5:{ocd_prec5}')
+
+print(f'OCD ON: Total Prec1: {OCD_prec1_tot / len(test_loader)}, Prec5: {OCD_prec5_tot / len(test_loader)}')

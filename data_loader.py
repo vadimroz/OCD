@@ -1,18 +1,23 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import os
 from nerf_utils.nerf import cumprod_exclusive, get_minibatches, get_ray_bundle, positional_encoding
 from nerf_utils.tiny_nerf import VeryTinyNerfModel
-from torchvision.datasets import mnist
+from torchvision.datasets import mnist, cifar
 from torchvision import transforms
 import Lenet5
 from torch.utils.data import DataLoader
 from torchvision.transforms import ToTensor
 from copy import deepcopy
+from torchvision import models
+from SqueezeNet.squeezenet_model import SqueezeNet
+from SqueezeNet.prepare_data import gen_data
+
 def wrapper_dataset(config, args, device):
     if args.datatype == 'tinynerf':
-        
-        data =  np.load(args.data_train_path)
+
+        data = np.load(args.data_train_path)
         images = data["images"]
         # Camera extrinsics (poses)
         tform_cam2world = data["poses"]
@@ -55,11 +60,11 @@ def wrapper_dataset(config, args, device):
         batch['far_thresh'] = far_thresh
         batch['depth_samples_per_ray'] = depth_samples_per_ray
         batch['encode'] = encode
-        batch['get_minibatches'] =get_minibatches
-        batch['chunksize'] =chunksize
+        batch['get_minibatches'] = get_minibatches
+        batch['chunksize'] = chunksize
         batch['num_encoding_functions'] = num_encoding_functions
-        train_ds, test_ds = [],[]
-        for img,tfrom in zip(images,tform_cam2world):
+        train_ds, test_ds = [], []
+        for img, tfrom in zip(images, tform_cam2world):
             batch['input'] = tfrom
             batch['output'] = img
             train_ds.append(deepcopy(batch))
@@ -68,28 +73,59 @@ def wrapper_dataset(config, args, device):
         test_ds = [batch]
     elif args.datatype == 'mnist':
         model = Lenet5.NetOriginal()
-        train_transform = transforms.Compose(
-                            [
-                            transforms.ToTensor()
-                            ])
-        train_dataset = mnist.MNIST(
-                "\data\mnist", train=True, download=True, transform=ToTensor())
-        test_dataset = mnist.MNIST(
-                "\data\mnist", train=False, download=True, transform=ToTensor())
+        train_transform = transforms.Compose([transforms.ToTensor()])
+        train_dataset = mnist.MNIST("\data\mnist", train=True, download=True, transform=ToTensor())
+        test_dataset = mnist.MNIST("\data\mnist", train=False, download=True, transform=ToTensor())
         train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=1)
-        train_ds, test_ds = [],[]
+        train_ds, test_ds = [], []
         for idx, data in enumerate(train_loader):
             train_x, train_label = data[0], data[1]
-            train_x = train_x[:,0,:,:].unsqueeze(1)
-            batch = {'input':train_x,'output':train_label}
+            train_x = train_x[:, 0, :, :].unsqueeze(1)
+            batch = {'input': train_x, 'output': train_label}
             train_ds.append(deepcopy(batch))
         for idx, data in enumerate(test_loader):
             train_x, train_label = data[0], data[1]
-            train_x = train_x[:,0,:,:].unsqueeze(1)
-            batch = {'input':train_x,'output':train_label}
+            train_x = train_x[:, 0, :, :].unsqueeze(1)
+            batch = {'input': train_x, 'output': train_label}
             test_ds.append(deepcopy(batch))
-    else:
-        "implement on your own"
-        pass
-    return train_ds,test_ds,model
+    elif args.datatype == 'cifar10':
+        model = models.__dict__['densenet'](
+            num_classes=10,
+            depth=100,
+            growthRate=12,
+            compressionRate=2,
+            dropRate=0,
+        )
+        transform_train = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        trainset = cifar.CIFAR10(root=os.path.join(os.getcwd(),"OCD/data/"), train=True, download=True, transform=transform_train)
+        train_loader = DataLoader(trainset, batch_size=1, shuffle=True)
+        testset = cifar.CIFAR10(root=os.path.join(os.getcwd(),"OCD/data/"), train=False, download=True, transform=transform_test)
+        test_loader = DataLoader(testset, batch_size=1, shuffle=False)
+        train_ds, test_ds = [], []
+        for batch_idx, (inputs, targets) in enumerate(test_loader):
+            batch = {'input': inputs, 'output': targets}
+            test_ds.append(deepcopy(batch))
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            batch = {'input': inputs, 'output': targets}
+            train_ds.append(deepcopy(batch))
+    elif args.datatype == 'CTSD':
+        train_ds, test_ds = [], []
+        model = SqueezeNet(num_classes=58)
+        dataloaders = gen_data()
+        for batch_idx, (inputs, targets) in enumerate(dataloaders['train']):
+            batch = {'input': inputs, 'output': targets}
+            train_ds.append(deepcopy(batch))
+        for batch_idx, (inputs, targets) in enumerate(dataloaders['test']):
+            batch = {'input': inputs, 'output': targets}
+            test_ds.append(deepcopy(batch))
+    return train_ds, test_ds, model
